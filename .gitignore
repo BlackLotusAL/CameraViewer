@@ -203,6 +203,9 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Locally generated CameraViewer demo frames
+sample_frames/
+
 # Ruff stuff:
 .ruff_cache/
 
