@@ -7,26 +7,24 @@ import numpy as np
 
 
 class SequenceValidationError(ValueError):
-    """Raised when the configured image sequence is incomplete."""
+    pass
 
 
 class FrameSource(ABC):
-    """Replaceable image source used by the capture scheduler."""
+    """采集调度器使用的可替换图像源。"""
 
     frame_count: int
 
     @abstractmethod
     def validate(self) -> None:
-        """Validate source configuration without decoding a frame."""
+        """只验证数据源配置，不读取或解码图像。"""
 
     @abstractmethod
     def load_rgb(self, frame_number: int) -> np.ndarray:
-        """Read, decode and process one frame in a worker thread."""
+        """在工作线程中读取、解码并处理一帧。"""
 
 
 class ImageSequenceSource(FrameSource):
-    """Local JPEG sequence source with Unicode-path support."""
-
     def __init__(self, directory: Path, frame_count: int = 500) -> None:
         self.directory = Path(directory).expanduser()
         self.frame_count = frame_count
@@ -53,8 +51,7 @@ class ImageSequenceSource(FrameSource):
     def load_rgb(self, frame_number: int) -> np.ndarray:
         path = self.frame_path(frame_number)
 
-        # np.fromfile + cv2.imdecode works with Chinese and other non-ASCII
-        # paths on Windows, unlike some cv2.imread builds.
+        # 组合 fromfile 与 imdecode，确保 Windows 下的中文和非 ASCII 路径可用。
         encoded = np.fromfile(str(path), dtype=np.uint8)
         if encoded.size == 0:
             raise IOError("无法读取图像文件：{}".format(path.name))

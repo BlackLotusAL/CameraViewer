@@ -51,21 +51,24 @@ python -m cameraviewer --image-dir sample_frames
 pytest
 ```
 
-测试默认启用严格警告模式，覆盖 Unicode 路径、序列完整性、游标推进、连续失败和“停止后立即重启”的迟到结果隔离。
+测试默认启用严格警告模式，覆盖 Unicode 路径、序列完整性、游标推进、连续失败、
+50 次启停和“停止后立即重启”的迟到结果隔离。
 
 ## 代码结构
 
 ```text
 cameraviewer/
 ├── app.py          # 命令行入口和 QApplication
-├── main_window.py  # 全局控制与三路界面组合
+├── main_window.py  # 窗口组合与信号连接
+├── controls.py     # 全局工具栏和状态栏
 ├── widgets.py      # 相机面板和绘制后 Pull
-├── capture.py      # 单路调度器与 QRunnable Worker
+├── capture.py      # 全局协调器、单路调度器和后台任务
 ├── source.py       # 可替换数据源接口和本地图像序列
-└── models.py       # 状态与帧结果模型
+└── models.py       # 单路/全局状态与帧结果模型
 scripts/
 └── generate_frames.py
 tests/
 ```
 
-数据源只依赖 `FrameSource` 接口。替换为真实相机或 RPC 时，界面和调度器无需改动。
+`CaptureCoordinator` 统一管理线程池和三路控制器；控制器只依赖 `FrameSource`
+接口。替换为真实相机或 RPC 时，界面和调度流程无需改动。

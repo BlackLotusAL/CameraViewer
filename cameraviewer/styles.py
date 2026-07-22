@@ -1,4 +1,11 @@
-"""Application stylesheet built from a small semantic light palette."""
+from PySide2.QtWidgets import QWidget
+
+
+def refresh_style(widget: QWidget) -> None:
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    widget.update()
 
 
 LIGHT_PALETTE = {

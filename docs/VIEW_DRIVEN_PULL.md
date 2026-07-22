@@ -11,11 +11,12 @@ sequenceDiagram
 
     actor User as 用户
     participant MW as MainWindow<br/>GUI 线程
+    participant Coord as CaptureCoordinator<br/>GUI 线程
     participant Panel as CameraPanel<br/>GUI 线程
     participant View as ImageViewport<br/>GUI 线程
     participant Ctrl as CameraController<br/>GUI 线程
     participant Pool as QThreadPool<br/>最多 3 线程
-    participant Worker as FrameWorker<br/>Worker 线程
+    participant Worker as _FrameWorker<br/>Worker 线程
     participant Source as ImageSequenceSource<br/>文件输入
 
     Note over Panel,Ctrl: frame_requested → request_frame()<br/>result_ready → show_result()
@@ -23,12 +24,12 @@ sequenceDiagram
     rect rgb(239, 246, 255)
         Note over User,Source: A. 启动与首帧 Pull
         User->>MW: 点击“启动采集”
-        MW->>Source: validate()
-        Source-->>MW: 图像序列有效
+        MW->>Coord: start(source)
+        Coord->>Source: validate()
+        Source-->>Coord: 图像序列有效
 
         loop 三路相机
-            MW->>Ctrl: configure_source(source)
-            MW->>Ctrl: start()<br/>generation++，RUNNING
+            Coord->>Ctrl: start(source)<br/>generation++，RUNNING
             Ctrl-->>Panel: state_changed(RUNNING)
             Panel->>Ctrl: frame_requested<br/>首帧 Pull
         end
@@ -39,10 +40,10 @@ sequenceDiagram
         loop 相机保持 RUNNING
             Panel->>Ctrl: request_frame()
             Ctrl->>Ctrl: _submit()<br/>_in_flight = True
-            Ctrl->>Pool: start(FrameWorker)
+            Ctrl->>Pool: start(_FrameWorker)
             Pool->>Worker: run()
             activate Worker
-            Worker->>Source: load_rgb(cursor)
+            Worker->>Source: load_rgb(frame_number)
             Source-->>Worker: RGB ndarray
             Worker-->>Ctrl: finished.emit(FrameResult)<br/>Qt 跨线程排队信号
             deactivate Worker
@@ -65,9 +66,9 @@ sequenceDiagram
 
 ## 如何读这张图
 
-1. `MainWindow.start_all()` 验证目录，并启动三路 `CameraController`。
+1. `MainWindow.start_all()` 创建数据源，交给 `CaptureCoordinator` 验证并启动三路控制器。
 2. `CameraPanel.apply_state()` 收到 `RUNNING`，发出首帧 `frame_requested`。
-3. `CameraController` 只提交一个 `FrameWorker`，Worker 在线程池读取并处理一帧。
+3. `CameraController` 只提交一个 `_FrameWorker`，Worker 在线程池读取并处理一帧。
 4. `FrameResult` 通过 Qt Signal 回到 GUI 线程，由 `CameraPanel` 交给 `ImageViewport`。
 5. `ImageViewport.paintEvent()` 完成实际绘制，再触发下一帧 Pull，形成闭环。
 
@@ -87,7 +88,7 @@ sequenceDiagram
 
 | 场景 | 处理方式 |
 | --- | --- |
-| 目录不存在或 500 帧序列不完整 | `ImageSequenceSource.validate()` 抛出异常；三路 Controller 进入 `ERROR`，不发起首帧 Pull。 |
+| 目录不存在或 500 帧序列不完整 | `CaptureCoordinator.start()` 捕获验证异常并将三路 Controller 设为 `ERROR`，不发起首帧 Pull。 |
 | 已有在途 Worker 时再次收到请求 | 不重复创建 Worker，只设置 `_pending=True`；多个重复请求合并为一个待处理请求。 |
 | 单帧读取、解码或处理失败 | 失败结果仍推进 cursor；界面显示错误并保留上一张成功图像，然后立即 Pull 下一帧，不等待绘制。 |
 | 连续 500 帧失败 | 仅对应 Controller 进入 `ERROR`，该路停止 Pull，其他两路继续。 |
@@ -101,10 +102,11 @@ sequenceDiagram
 | 职责 | 类与方法 | 文件 |
 | --- | --- | --- |
 | 全局启动/停止 | `MainWindow.start_all()` / `stop_all()` | [`main_window.py`](../cameraviewer/main_window.py) |
+| 数据源验证与三路协调 | `CaptureCoordinator.start()` / `stop()` | [`capture.py`](../cameraviewer/capture.py) |
 | 首帧请求 | `CameraPanel.apply_state()` | [`widgets.py`](../cameraviewer/widgets.py) |
 | 绘制完成后的下一帧请求 | `ImageViewport.paintEvent()` | [`widgets.py`](../cameraviewer/widgets.py) |
 | 单路 Pull 调度 | `CameraController.request_frame()` / `_submit()` | [`capture.py`](../cameraviewer/capture.py) |
 | 结果结算与迟到过滤 | `CameraController._on_worker_finished()` | [`capture.py`](../cameraviewer/capture.py) |
-| 后台单帧任务 | `FrameWorker.run()` | [`capture.py`](../cameraviewer/capture.py) |
+| 后台单帧任务 | `_FrameWorker.run()` | [`capture.py`](../cameraviewer/capture.py) |
 
 > **判断实现是否正确：** 首帧由 View 发起；成功帧只有实际绘制后才继续；失败结果交付后立即继续；旧 generation 的结果永远不能进入 View。

@@ -1,7 +1,10 @@
 from pathlib import Path
+from typing import Optional
+
+import numpy as np
 
 from PySide2.QtCore import QSize, Qt, Signal, Slot
-from PySide2.QtGui import QIcon, QImage, QPixmap
+from PySide2.QtGui import QIcon, QImage, QPaintEvent, QPixmap, QResizeEvent
 from PySide2.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,6 +15,7 @@ from PySide2.QtWidgets import (
 )
 
 from .models import CameraState, FrameResult
+from .styles import refresh_style
 
 
 STATE_TEXT = {
@@ -22,21 +26,16 @@ STATE_TEXT = {
 }
 
 
-def refresh_style(widget: QWidget) -> None:
-    """Re-evaluate stylesheet selectors after a dynamic property changes."""
-
-    style = widget.style()
-    style.unpolish(widget)
-    style.polish(widget)
-    widget.update()
-
-
 class ImageViewport(QLabel):
-    """Aspect-ratio preserving image view that requests after real painting."""
+    """保持图像宽高比，并在新帧真正绘制后通知 View 继续 Pull。"""
 
     frame_painted = Signal()
+    ASPECT_WIDTH = 16
+    ASPECT_HEIGHT = 9
+    MINIMUM_WIDTH = 240
+    MINIMUM_HEIGHT = 135
 
-    def __init__(self, parent: QWidget = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("imageViewport")
         self.setAlignment(Qt.AlignCenter)
@@ -44,26 +43,29 @@ class ImageViewport(QLabel):
         size_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         size_policy.setHeightForWidth(True)
         self.setSizePolicy(size_policy)
-        self.setMinimumSize(240, 135)
+        self.setMinimumSize(self.MINIMUM_WIDTH, self.MINIMUM_HEIGHT)
         self._source_pixmap = QPixmap()
         self._request_after_paint = False
 
-    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt API name
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt 接口命名
         return True
 
-    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt API name
-        return max(135, round(width * 9 / 16))
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt 接口命名
+        return max(
+            self.MINIMUM_HEIGHT,
+            round(width * self.ASPECT_HEIGHT / self.ASPECT_WIDTH),
+        )
 
-    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 接口命名
         return QSize(640, 360)
 
-    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API name
-        return QSize(240, 135)
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt 接口命名
+        return QSize(self.MINIMUM_WIDTH, self.MINIMUM_HEIGHT)
 
-    def set_frame(self, rgb) -> None:
+    def set_frame(self, rgb: np.ndarray) -> None:
         height, width, channels = rgb.shape
         bytes_per_line = channels * width
-        # copy() makes QImage own its pixels after the NumPy result is released.
+        # copy() 让 QImage 独立持有像素，避免 NumPy 结果释放后引用失效。
         image = QImage(
             rgb.data,
             width,
@@ -77,11 +79,11 @@ class ImageViewport(QLabel):
         self._request_after_paint = True
         self.update()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt 接口命名
         super().resizeEvent(event)
         self._refresh_pixmap()
 
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API name
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 接口命名
         super().paintEvent(event)
         if self._request_after_paint and not self._source_pixmap.isNull():
             self._request_after_paint = False
@@ -99,25 +101,30 @@ class ImageViewport(QLabel):
 
 
 class CameraPanel(QFrame):
-    """View for one camera. It owns all pull requests for that camera."""
+    """单路相机视图，负责发起该路的全部 Pull 请求。"""
 
     frame_requested = Signal()
 
-    def __init__(self, camera_id: int, parent: QWidget = None) -> None:
+    def __init__(self, camera_id: int, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.camera_id = camera_id
-        self.setObjectName("cameraPanel")
-        self.setMinimumWidth(300)
-        size_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        size_policy.setHeightForWidth(True)
-        self.setSizePolicy(size_policy)
+        self._configure_panel()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self._header = self._build_header()
         layout.addWidget(self._header)
+        layout.addWidget(self._build_body())
 
+    def _configure_panel(self) -> None:
+        self.setObjectName("cameraPanel")
+        self.setMinimumWidth(300)
+        size_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        size_policy.setHeightForWidth(True)
+        self.setSizePolicy(size_policy)
+
+    def _build_body(self) -> QWidget:
         body = QWidget(self)
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(10, 10, 10, 12)
@@ -127,11 +134,15 @@ class CameraPanel(QFrame):
         self.viewport.frame_painted.connect(self.frame_requested)
         body_layout.addWidget(self.viewport)
 
-        metadata = QWidget(body)
+        self._metadata = self._build_metadata(body)
+        body_layout.addWidget(self._metadata)
+        return body
+
+    def _build_metadata(self, parent: QWidget) -> QWidget:
+        metadata = QWidget(parent)
         metadata_layout = QVBoxLayout(metadata)
         metadata_layout.setContentsMargins(4, 0, 4, 0)
         metadata_layout.setSpacing(0)
-        self._metadata = metadata
 
         self.frame_value = self._add_meta_row(metadata_layout, "帧序号", "—")
         metadata_layout.addWidget(self._divider())
@@ -143,13 +154,12 @@ class CameraPanel(QFrame):
             "—",
             error=True,
         )
-        body_layout.addWidget(metadata)
-        layout.addWidget(body)
+        return metadata
 
-    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt API name
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt 接口命名
         return True
 
-    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt API name
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt 接口命名
         viewport_width = max(240, width - 20)
         body_height = (
             10
@@ -160,11 +170,11 @@ class CameraPanel(QFrame):
         )
         return self._header.height() + body_height + 2
 
-    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 接口命名
         width = 420
         return QSize(width, self.heightForWidth(width))
 
-    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt 接口命名
         width = 300
         return QSize(width, self.heightForWidth(width))
 
@@ -199,7 +209,12 @@ class CameraPanel(QFrame):
         return divider
 
     @staticmethod
-    def _add_meta_row(layout: QVBoxLayout, label: str, value: str, error: bool = False) -> QLabel:
+    def _add_meta_row(
+        layout: QVBoxLayout,
+        label: str,
+        value: str,
+        error: bool = False,
+    ) -> QLabel:
         row = QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(8, 9, 8, 9)
@@ -228,7 +243,7 @@ class CameraPanel(QFrame):
 
         if state is CameraState.RUNNING:
             self.error_value.setText("—")
-            # The View initiates the first pull only after entering RUNNING.
+            # View 仅在进入运行态后发起首帧 Pull。
             self.frame_requested.emit()
         elif state is CameraState.ERROR and message:
             self.error_value.setText(message)
@@ -239,13 +254,13 @@ class CameraPanel(QFrame):
             return
 
         self.frame_value.setText("{:04d}".format(result.frame_number))
-        if result.ok:
-            height, width, _ = result.rgb.shape
+        rgb = result.rgb
+        if rgb is not None and not result.error:
+            height, width, _ = rgb.shape
             self.resolution_value.setText("{} × {}".format(width, height))
             self.error_value.setText("—")
-            self.viewport.set_frame(result.rgb)
+            self.viewport.set_frame(rgb)
         else:
             self.error_value.setText(result.error)
-            # A failed result has been delivered to the View, so it can pull
-            # again immediately without waiting for a paint event.
+            # 失败结果交付 View 后立即继续 Pull，无需等待绘制事件。
             self.frame_requested.emit()
